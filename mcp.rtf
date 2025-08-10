@@ -1,508 +1,400 @@
-{\rtf1\ansi\ansicpg1252\cocoartf2822
-\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\froman\fcharset0 Times-Bold;\f1\fnil\fcharset0 HelveticaNeue;\f2\froman\fcharset0 Times-Roman;
-\f3\froman\fcharset0 Times-Italic;}
-{\colortbl;\red255\green255\blue255;\red0\green0\blue0;\red0\green0\blue0;\red143\green144\blue150;
-\red42\green44\blue51;\red147\green0\blue147;\red167\green87\blue5;\red50\green94\blue238;\red66\green147\blue62;
+1. 修改Langchain4JMcpClientFactory.java
+
+
+java
+/*
+ * Copyright Camunda Services GmbH and/or licensed to Camunda Services GmbH
+ * under one or more contributor license agreements. Licensed under a proprietary license.
+ * See the License.txt file for more information. You may not use this file
+ * except in compliance with the proprietary license.
+ */
+package io.camunda.connector.agenticai.mcp.client.framework.langchain4j;
+
+import dev.langchain4j.mcp.client.DefaultMcpClient;
+import dev.langchain4j.mcp.client.McpClient;
+import dev.langchain4j.mcp.client.transport.McpTransport;
+import dev.langchain4j.mcp.client.transport.http.HttpMcpTransport;
+import dev.langchain4j.mcp.client.transport.stdio.StdioMcpTransport;
+import io.camunda.connector.agenticai.mcp.client.McpClientFactory;
+import io.camunda.connector.agenticai.mcp.client.configuration.McpClientConfigurationProperties;
+import io.camunda.connector.agenticai.mcp.client.configuration.McpClientConfigurationProperties.McpClientConfiguration;
+import java.util.Optional;
+
+public class Langchain4JMcpClientFactory implements McpClientFactory<McpClient> {
+
+  @Override
+  public McpClient createClient(String clientId, McpClientConfiguration config) {
+    final var transport = createTransport(config);
+    final var builder = new DefaultMcpClient.Builder().key(clientId).transport(transport);
+
+    Optional.ofNullable(config.initializationTimeout()).ifPresent(builder::initializationTimeout);
+    Optional.ofNullable(config.toolExecutionTimeout()).ifPresent(builder::toolExecutionTimeout);
+    Optional.ofNullable(config.reconnectInterval()).ifPresent(builder::reconnectInterval);
+
+    return builder.build();
+  }
+
+  // 修改createTransport方法以支持三种传输类型
+  private McpTransport createTransport(McpClientConfiguration config) {
+    // 检查哪种传输配置不为null
+    if (config.stdio() != null) {
+      return createStdioTransport(config.stdio());
+    } else if (config.http() != null) {
+      return createHttpTransport(config.http());
+    } else if (config.streamableHttp() != null) {
+      return createStreamableHttpTransport(config.streamableHttp());
+    } else {
+      throw new IllegalArgumentException("No valid transport configuration found in McpClientConfiguration");
+    }
+  }
+
+  private McpTransport createStdioTransport(
+      McpClientConfigurationProperties.StdioMcpClientTransportConfiguration stdio) {
+    return new StdioMcpTransport.Builder()
+        .command(stdio.command())
+        .environment(stdio.env())
+        .logEvents(stdio.logEvents())
+        .build();
+  }
+
+  private McpTransport createHttpTransport(
+      McpClientConfigurationProperties.HttpMcpClientTransportConfiguration http) {
+    return new HttpMcpTransport.Builder()
+        .sseUrl(http.sseUrl())
+        .timeout(http.timeout())
+        .logRequests(http.logRequests())
+        .logResponses(http.logResponses())
+        .build();
+  }
+
+  // 新增streamable HTTP传输创建方法
+  private McpTransport createStreamableHttpTransport(
+      McpClientConfigurationProperties.StreamableHttpMcpClientTransportConfiguration streamableHttp) {
+    // 注意：这里需要实现StreamableHttpMcpTransport类
+    // 这是一个新的传输实现，需要创建
+    return new StreamableHttpMcpTransport.Builder()
+        .baseUrl(streamableHttp.baseUrl())
+        .headers(streamableHttp.headers())
+        .timeout(streamableHttp.timeout())
+        .readTimeout(streamableHttp.readTimeout())
+        .streamingContentType(streamableHttp.streamingContentType())
+        .bufferSize(streamableHttp.bufferSize())
+        .flushInterval(streamableHttp.flushInterval())
+        .logRequests(streamableHttp.logRequests())
+        .logResponses(streamableHttp.logResponses())
+        .build();
+  }
 }
-{\*\expandedcolortbl;;\cssrgb\c0\c0\c0;\cssrgb\c0\c0\c0\c84706;\cssrgb\c62745\c63137\c65490;
-\cssrgb\c21961\c22745\c25882;\cssrgb\c65098\c14902\c64314;\cssrgb\c71765\c41961\c392;\cssrgb\c25098\c47059\c94902;\cssrgb\c31373\c63137\c30980;
+2. 修改Langchain4JMcpRemoteClientHandler.java
+
+
+java
+/*
+ * Copyright Camunda Services GmbH and/or licensed to Camunda Services GmbH
+ * under one or more contributor license agreements. Licensed under a proprietary license.
+ * See the License.txt file for more information. You may not use this file
+ * except in compliance with the proprietary license.
+ */
+package io.camunda.connector.agenticai.mcp.client.framework.langchain4j;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.mcp.client.McpClient;
+import io.camunda.connector.agenticai.mcp.client.McpRemoteClientHandler;
+import io.camunda.connector.agenticai.mcp.client.McpRemoteClientRegistry;
+import io.camunda.connector.agenticai.mcp.client.McpRemoteClientRegistry.McpRemoteClientIdentifier;
+import io.camunda.connector.agenticai.mcp.client.McpToolNameFilter;
+import io.camunda.connector.agenticai.mcp.client.model.McpClientOperation;
+import io.camunda.connector.agenticai.mcp.client.model.McpRemoteClientRequest;
+import io.camunda.connector.agenticai.mcp.client.model.result.McpClientResult;
+import io.camunda.connector.api.outbound.OutboundConnectorContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class Langchain4JMcpRemoteClientHandler implements McpRemoteClientHandler {
+
+  private static final Logger LOGGER =
+      LoggerFactory.getLogger(Langchain4JMcpRemoteClientHandler.class);
+
+  private final ObjectMapper objectMapper;
+  private final McpRemoteClientRegistry<McpClient> remoteClientRegistry;
+  private final Langchain4JMcpClientExecutor clientExecutor;
+
+  public Langchain4JMcpRemoteClientHandler(
+      ObjectMapper objectMapper,
+      McpRemoteClientRegistry<McpClient> remoteClientRegistry,
+      Langchain4JMcpClientExecutor clientExecutor) {
+    this.objectMapper = objectMapper;
+    this.remoteClientRegistry = remoteClientRegistry;
+    this.clientExecutor = clientExecutor;
+  }
+
+  @Override
+  public McpClientResult handle(OutboundConnectorContext context, McpRemoteClientRequest request) {
+    final var clientId = McpRemoteClientIdentifier.from(context);
+    final var operation =
+        objectMapper.convertValue(request.data().operation(), McpClientOperation.class);
+    final var toolNameFilter = McpToolNameFilter.from(request.data().tools());
+
+    // 获取连接配置并记录连接类型
+    final var connectionConfig = request.data().connection();
+    LOGGER.debug("MCP({}): Handling operation '{}' on remote client with connection type: {}", 
+        clientId, operation.method(), connectionConfig.getClass().getSimpleName());
+
+    // 使用新的getClient方法，支持ConnectionConfiguration接口
+    final var client = remoteClientRegistry.getClient(clientId, connectionConfig);
+
+    return clientExecutor.execute(client, operation, toolNameFilter);
+  }
 }
-{\*\listtable{\list\listtemplateid1\listhybrid{\listlevel\levelnfc23\levelnfcn23\leveljc0\leveljcn0\levelfollow0\levelstartat1\levelspace360\levelindent0{\*\levelmarker \{disc\}}{\leveltext\leveltemplateid1\'01\uc0\u8226 ;}{\levelnumbers;}\fi-360\li720\lin720 }{\listname ;}\listid1}}
-{\*\listoverridetable{\listoverride\listid1\listoverridecount0\ls1}}
-\margl1440\margr1440\vieww11520\viewh8400\viewkind0
-\deftab720
-\pard\pardeftab720\sa298\partightenfactor0
+3. Langchain4JMcpClientExecutor.java和Langchain4JMcpClientHandler.java
+这两个文件不需要修改，因为：
+	•	Langchain4JMcpClientExecutor: 它只处理MCP协议层面的操作，不关心底层传输方式
+	•	Langchain4JMcpClientHandler: 它处理Runtime配置的客户端，传输类型在工厂层面处理
+4. 需要创建的新文件：StreamableHttpMcpTransport.java
 
-\f0\b\fs36 \cf0 \expnd0\expndtw0\kerning0
-\outl0\strokewidth0 \strokec2 1. \uc0\u20462 \u25913 Langchain4JMcpClientFactory.java\
-\pard\pardeftab720\qc\partightenfactor0
 
-\f1\b0\fs22 \cf3 \strokec3 \
-\
-\pard\pardeftab720\partightenfactor0
+java
+/*
+ * Copyright Camunda Services GmbH and/or licensed to Camunda Services GmbH
+ * under one or more contributor license agreements. Licensed under a proprietary license.
+ * See the License.txt file for more information. You may not use this file
+ * except in compliance with the proprietary license.
+ */
+package io.camunda.connector.agenticai.mcp.client.framework.langchain4j;
 
-\f2\fs24 \cf0 \strokec2 java\
-\pard\pardeftab720\partightenfactor0
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.mcp.client.transport.McpTransport;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-\f3\i \cf4 \strokec4 /*\
-\pard\pardeftab720\partightenfactor0
-
-\f2\i0 \cf5 \strokec5  * Copyright Camunda Services GmbH and/or licensed to Camunda Services GmbH\
- * under one or more contributor license agreements. Licensed under a proprietary license.\
- * See the License.txt file for more information. You may not use this file\
- * except in compliance with the proprietary license.\
-\pard\pardeftab720\partightenfactor0
-
-\f3\i \cf4 \strokec4  */
-\f2\i0 \cf5 \strokec5 \
-\pard\pardeftab720\partightenfactor0
-\cf6 \strokec6 package\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.framework.langchain4j;\
-\
-\cf6 \strokec6 import\cf5 \strokec5  dev.langchain4j.mcp.client.\cf7 \strokec7 DefaultMcpClient\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  dev.langchain4j.mcp.client.\cf7 \strokec7 McpClient\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  dev.langchain4j.mcp.client.transport.\cf7 \strokec7 McpTransport\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  dev.langchain4j.mcp.client.transport.http.\cf7 \strokec7 HttpMcpTransport\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  dev.langchain4j.mcp.client.transport.stdio.\cf7 \strokec7 StdioMcpTransport\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.\cf7 \strokec7 McpClientFactory\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.configuration.\cf7 \strokec7 McpClientConfigurationProperties\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.configuration.\cf7 \strokec7 McpClientConfigurationProperties\cf5 \strokec5 .\cf7 \strokec7 McpClientConfiguration\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  java.util.\cf7 \strokec7 Optional\cf5 \strokec5 ;\
-\
-\cf6 \strokec6 public\cf5 \strokec5  \cf6 \strokec6 class\cf5 \strokec5  \cf7 \strokec7 Langchain4JMcpClientFactory\cf5 \strokec5  \cf6 \strokec6 implements\cf5 \strokec5  \cf7 \strokec7 McpClientFactory\cf5 \strokec5 <\cf7 \strokec7 McpClient\cf5 \strokec5 > \{\
-\
-  @Override\
-  \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 McpClient\cf5 \strokec5  \cf8 \strokec8 createClient\cf5 \strokec5 (\cf7 \strokec7 String\cf5 \strokec5  clientId, \cf7 \strokec7 McpClientConfiguration\cf5 \strokec5  config) \{\
-    \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 var\cf5 \strokec5  transport \cf8 \strokec8 =\cf5 \strokec5  \cf8 \strokec8 createTransport\cf5 \strokec5 (config);\
-    \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 var\cf5 \strokec5  builder \cf8 \strokec8 =\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 DefaultMcpClient\cf5 \strokec5 .\cf7 \strokec7 Builder\cf5 \strokec5 ().\cf8 \strokec8 key\cf5 \strokec5 (clientId).\cf8 \strokec8 transport\cf5 \strokec5 (transport);\
-\
-    \cf7 \strokec7 Optional\cf5 \strokec5 .\cf8 \strokec8 ofNullable\cf5 \strokec5 (config.\cf8 \strokec8 initializationTimeout\cf5 \strokec5 ()).\cf8 \strokec8 ifPresent\cf5 \strokec5 (builder\cf8 \strokec8 ::initializationTimeout\cf5 \strokec5 );\
-    \cf7 \strokec7 Optional\cf5 \strokec5 .\cf8 \strokec8 ofNullable\cf5 \strokec5 (config.\cf8 \strokec8 toolExecutionTimeout\cf5 \strokec5 ()).\cf8 \strokec8 ifPresent\cf5 \strokec5 (builder\cf8 \strokec8 ::toolExecutionTimeout\cf5 \strokec5 );\
-    \cf7 \strokec7 Optional\cf5 \strokec5 .\cf8 \strokec8 ofNullable\cf5 \strokec5 (config.\cf8 \strokec8 reconnectInterval\cf5 \strokec5 ()).\cf8 \strokec8 ifPresent\cf5 \strokec5 (builder\cf8 \strokec8 ::reconnectInterval\cf5 \strokec5 );\
-\
-    \cf6 \strokec6 return\cf5 \strokec5  builder.\cf8 \strokec8 build\cf5 \strokec5 ();\
-  \}\
-\
-  
-\f3\i \cf4 \strokec4 // \uc0\u20462 \u25913 createTransport\u26041 \u27861 \u20197 \u25903 \u25345 \u19977 \u31181 \u20256 \u36755 \u31867 \u22411 
-\f2\i0 \cf5 \strokec5 \
-  \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 McpTransport\cf5 \strokec5  \cf8 \strokec8 createTransport\cf5 \strokec5 (\cf7 \strokec7 McpClientConfiguration\cf5 \strokec5  config) \{\
+public class StreamableHttpMcpTransport implements McpTransport {
     
-\f3\i \cf4 \strokec4 // \uc0\u26816 \u26597 \u21738 \u31181 \u20256 \u36755 \u37197 \u32622 \u19981 \u20026 null
-\f2\i0 \cf5 \strokec5 \
-    \cf6 \strokec6 if\cf5 \strokec5  (config.\cf8 \strokec8 stdio\cf5 \strokec5 () \cf8 \strokec8 !=\cf5 \strokec5  \cf6 \strokec6 null\cf5 \strokec5 ) \{\
-      \cf6 \strokec6 return\cf5 \strokec5  \cf8 \strokec8 createStdioTransport\cf5 \strokec5 (config.\cf8 \strokec8 stdio\cf5 \strokec5 ());\
-    \} \cf6 \strokec6 else\cf5 \strokec5  \cf6 \strokec6 if\cf5 \strokec5  (config.\cf8 \strokec8 http\cf5 \strokec5 () \cf8 \strokec8 !=\cf5 \strokec5  \cf6 \strokec6 null\cf5 \strokec5 ) \{\
-      \cf6 \strokec6 return\cf5 \strokec5  \cf8 \strokec8 createHttpTransport\cf5 \strokec5 (config.\cf8 \strokec8 http\cf5 \strokec5 ());\
-    \} \cf6 \strokec6 else\cf5 \strokec5  \cf6 \strokec6 if\cf5 \strokec5  (config.\cf8 \strokec8 streamableHttp\cf5 \strokec5 () \cf8 \strokec8 !=\cf5 \strokec5  \cf6 \strokec6 null\cf5 \strokec5 ) \{\
-      \cf6 \strokec6 return\cf5 \strokec5  \cf8 \strokec8 createStreamableHttpTransport\cf5 \strokec5 (config.\cf8 \strokec8 streamableHttp\cf5 \strokec5 ());\
-    \} \cf6 \strokec6 else\cf5 \strokec5  \{\
-      \cf6 \strokec6 throw\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 IllegalArgumentException\cf5 \strokec5 (\cf9 \strokec9 "No valid transport configuration found in McpClientConfiguration"\cf5 \strokec5 );\
-    \}\
-  \}\
-\
-  \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 McpTransport\cf5 \strokec5  \cf8 \strokec8 createStdioTransport\cf5 \strokec5 (\
-      \cf7 \strokec7 McpClientConfigurationProperties\cf5 \strokec5 .\cf7 \strokec7 StdioMcpClientTransportConfiguration\cf5 \strokec5  stdio) \{\
-    \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 StdioMcpTransport\cf5 \strokec5 .\cf7 \strokec7 Builder\cf5 \strokec5 ()\
-        .\cf8 \strokec8 command\cf5 \strokec5 (stdio.\cf8 \strokec8 command\cf5 \strokec5 ())\
-        .\cf8 \strokec8 environment\cf5 \strokec5 (stdio.\cf8 \strokec8 env\cf5 \strokec5 ())\
-        .\cf8 \strokec8 logEvents\cf5 \strokec5 (stdio.\cf8 \strokec8 logEvents\cf5 \strokec5 ())\
-        .\cf8 \strokec8 build\cf5 \strokec5 ();\
-  \}\
-\
-  \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 McpTransport\cf5 \strokec5  \cf8 \strokec8 createHttpTransport\cf5 \strokec5 (\
-      \cf7 \strokec7 McpClientConfigurationProperties\cf5 \strokec5 .\cf7 \strokec7 HttpMcpClientTransportConfiguration\cf5 \strokec5  http) \{\
-    \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 HttpMcpTransport\cf5 \strokec5 .\cf7 \strokec7 Builder\cf5 \strokec5 ()\
-        .\cf8 \strokec8 sseUrl\cf5 \strokec5 (http.\cf8 \strokec8 sseUrl\cf5 \strokec5 ())\
-        .\cf8 \strokec8 timeout\cf5 \strokec5 (http.\cf8 \strokec8 timeout\cf5 \strokec5 ())\
-        .\cf8 \strokec8 logRequests\cf5 \strokec5 (http.\cf8 \strokec8 logRequests\cf5 \strokec5 ())\
-        .\cf8 \strokec8 logResponses\cf5 \strokec5 (http.\cf8 \strokec8 logResponses\cf5 \strokec5 ())\
-        .\cf8 \strokec8 build\cf5 \strokec5 ();\
-  \}\
-\
-  
-\f3\i \cf4 \strokec4 // \uc0\u26032 \u22686 streamable HTTP\u20256 \u36755 \u21019 \u24314 \u26041 \u27861 
-\f2\i0 \cf5 \strokec5 \
-  \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 McpTransport\cf5 \strokec5  \cf8 \strokec8 createStreamableHttpTransport\cf5 \strokec5 (\
-      \cf7 \strokec7 McpClientConfigurationProperties\cf5 \strokec5 .\cf7 \strokec7 StreamableHttpMcpClientTransportConfiguration\cf5 \strokec5  streamableHttp) \{\
+    private static final Logger LOGGER = LoggerFactory.getLogger(StreamableHttpMcpTransport.class);
     
-\f3\i \cf4 \strokec4 // \uc0\u27880 \u24847 \u65306 \u36825 \u37324 \u38656 \u35201 \u23454 \u29616 StreamableHttpMcpTransport\u31867 
-\f2\i0 \cf5 \strokec5 \
-    
-\f3\i \cf4 \strokec4 // \uc0\u36825 \u26159 \u19968 \u20010 \u26032 \u30340 \u20256 \u36755 \u23454 \u29616 \u65292 \u38656 \u35201 \u21019 \u24314 
-\f2\i0 \cf5 \strokec5 \
-    \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 StreamableHttpMcpTransport\cf5 \strokec5 .\cf7 \strokec7 Builder\cf5 \strokec5 ()\
-        .\cf8 \strokec8 baseUrl\cf5 \strokec5 (streamableHttp.\cf8 \strokec8 baseUrl\cf5 \strokec5 ())\
-        .\cf8 \strokec8 headers\cf5 \strokec5 (streamableHttp.\cf8 \strokec8 headers\cf5 \strokec5 ())\
-        .\cf8 \strokec8 timeout\cf5 \strokec5 (streamableHttp.\cf8 \strokec8 timeout\cf5 \strokec5 ())\
-        .\cf8 \strokec8 readTimeout\cf5 \strokec5 (streamableHttp.\cf8 \strokec8 readTimeout\cf5 \strokec5 ())\
-        .\cf8 \strokec8 streamingContentType\cf5 \strokec5 (streamableHttp.\cf8 \strokec8 streamingContentType\cf5 \strokec5 ())\
-        .\cf8 \strokec8 bufferSize\cf5 \strokec5 (streamableHttp.\cf8 \strokec8 bufferSize\cf5 \strokec5 ())\
-        .\cf8 \strokec8 flushInterval\cf5 \strokec5 (streamableHttp.\cf8 \strokec8 flushInterval\cf5 \strokec5 ())\
-        .\cf8 \strokec8 logRequests\cf5 \strokec5 (streamableHttp.\cf8 \strokec8 logRequests\cf5 \strokec5 ())\
-        .\cf8 \strokec8 logResponses\cf5 \strokec5 (streamableHttp.\cf8 \strokec8 logResponses\cf5 \strokec5 ())\
-        .\cf8 \strokec8 build\cf5 \strokec5 ();\
-  \}\
-\}\
-\pard\pardeftab720\sa298\partightenfactor0
+    private final String baseUrl;
+    private final Map<String, String> headers;
+    private final Duration timeout;
+    private final Duration readTimeout;
+    private final String streamingContentType;
+    private final int bufferSize;
+    private final Duration flushInterval;
+    private final boolean logRequests;
+    private final boolean logResponses;
+    private final HttpClient httpClient;
+    private final ObjectMapper objectMapper;
 
-\f0\b\fs36 \cf0 \strokec2 2. \uc0\u20462 \u25913 Langchain4JMcpRemoteClientHandler.java\
-\pard\pardeftab720\qc\partightenfactor0
+    private StreamableHttpMcpTransport(Builder builder) {
+        this.baseUrl = builder.baseUrl;
+        this.headers = builder.headers;
+        this.timeout = builder.timeout;
+        this.readTimeout = builder.readTimeout;
+        this.streamingContentType = builder.streamingContentType;
+        this.bufferSize = builder.bufferSize;
+        this.flushInterval = builder.flushInterval;
+        this.logRequests = builder.logRequests;
+        this.logResponses = builder.logResponses;
+        this.objectMapper = new ObjectMapper();
+        this.httpClient = HttpClient.newBuilder()
+            .connectTimeout(timeout)
+            .build();
+    }
 
-\f1\b0\fs22 \cf3 \strokec3 \
-\
-\pard\pardeftab720\partightenfactor0
+    @Override
+    public String executeTool(ToolExecutionRequest request) {
+        try {
+            // 构建MCP协议请求
+            Map<String, Object> mcpRequest = Map.of(
+                "jsonrpc", "2.0",
+                "method", "tools/call",
+                "params", Map.of(
+                    "name", request.name(),
+                    "arguments", objectMapper.readValue(request.arguments(), Map.class)
+                )
+            );
 
-\f2\fs24 \cf0 \strokec2 java\
-\pard\pardeftab720\partightenfactor0
-
-\f3\i \cf4 \strokec4 /*\
-\pard\pardeftab720\partightenfactor0
-
-\f2\i0 \cf5 \strokec5  * Copyright Camunda Services GmbH and/or licensed to Camunda Services GmbH\
- * under one or more contributor license agreements. Licensed under a proprietary license.\
- * See the License.txt file for more information. You may not use this file\
- * except in compliance with the proprietary license.\
-\pard\pardeftab720\partightenfactor0
-
-\f3\i \cf4 \strokec4  */
-\f2\i0 \cf5 \strokec5 \
-\pard\pardeftab720\partightenfactor0
-\cf6 \strokec6 package\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.framework.langchain4j;\
-\
-\cf6 \strokec6 import\cf5 \strokec5  com.fasterxml.jackson.databind.\cf7 \strokec7 ObjectMapper\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  dev.langchain4j.mcp.client.\cf7 \strokec7 McpClient\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.\cf7 \strokec7 McpRemoteClientHandler\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.\cf7 \strokec7 McpRemoteClientRegistry\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.\cf7 \strokec7 McpRemoteClientRegistry\cf5 \strokec5 .\cf7 \strokec7 McpRemoteClientIdentifier\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.\cf7 \strokec7 McpToolNameFilter\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.model.\cf7 \strokec7 McpClientOperation\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.model.\cf7 \strokec7 McpRemoteClientRequest\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.model.result.\cf7 \strokec7 McpClientResult\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.api.outbound.\cf7 \strokec7 OutboundConnectorContext\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  org.slf4j.\cf7 \strokec7 Logger\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  org.slf4j.\cf7 \strokec7 LoggerFactory\cf5 \strokec5 ;\
-\
-\cf6 \strokec6 public\cf5 \strokec5  \cf6 \strokec6 class\cf5 \strokec5  \cf7 \strokec7 Langchain4JMcpRemoteClientHandler\cf5 \strokec5  \cf6 \strokec6 implements\cf5 \strokec5  \cf7 \strokec7 McpRemoteClientHandler\cf5 \strokec5  \{\
-\
-  \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 static\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 Logger\cf5 \strokec5  LOGGER \cf8 \strokec8 =\cf5 \strokec5 \
-      \cf7 \strokec7 LoggerFactory\cf5 \strokec5 .\cf8 \strokec8 getLogger\cf5 \strokec5 (\cf7 \strokec7 Langchain4JMcpRemoteClientHandler\cf5 \strokec5 .\cf6 \strokec6 class\cf5 \strokec5 );\
-\
-  \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 ObjectMapper\cf5 \strokec5  objectMapper;\
-  \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 McpRemoteClientRegistry\cf5 \strokec5 <\cf7 \strokec7 McpClient\cf5 \strokec5 > remoteClientRegistry;\
-  \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 Langchain4JMcpClientExecutor\cf5 \strokec5  clientExecutor;\
-\
-  \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Langchain4JMcpRemoteClientHandler\cf5 \strokec5 (\
-      \cf7 \strokec7 ObjectMapper\cf5 \strokec5  objectMapper,\
-      \cf7 \strokec7 McpRemoteClientRegistry\cf5 \strokec5 <\cf7 \strokec7 McpClient\cf5 \strokec5 > remoteClientRegistry,\
-      \cf7 \strokec7 Langchain4JMcpClientExecutor\cf5 \strokec5  clientExecutor) \{\
-    \cf6 \strokec6 this\cf5 \strokec5 .objectMapper \cf8 \strokec8 =\cf5 \strokec5  objectMapper;\
-    \cf6 \strokec6 this\cf5 \strokec5 .remoteClientRegistry \cf8 \strokec8 =\cf5 \strokec5  remoteClientRegistry;\
-    \cf6 \strokec6 this\cf5 \strokec5 .clientExecutor \cf8 \strokec8 =\cf5 \strokec5  clientExecutor;\
-  \}\
-\
-  @Override\
-  \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 McpClientResult\cf5 \strokec5  \cf8 \strokec8 handle\cf5 \strokec5 (\cf7 \strokec7 OutboundConnectorContext\cf5 \strokec5  context, \cf7 \strokec7 McpRemoteClientRequest\cf5 \strokec5  request) \{\
-    \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 var\cf5 \strokec5  clientId \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 McpRemoteClientIdentifier\cf5 \strokec5 .\cf8 \strokec8 from\cf5 \strokec5 (context);\
-    \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 var\cf5 \strokec5  operation \cf8 \strokec8 =\cf5 \strokec5 \
-        objectMapper.\cf8 \strokec8 convertValue\cf5 \strokec5 (request.\cf8 \strokec8 data\cf5 \strokec5 ().\cf8 \strokec8 operation\cf5 \strokec5 (), \cf7 \strokec7 McpClientOperation\cf5 \strokec5 .\cf6 \strokec6 class\cf5 \strokec5 );\
-    \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 var\cf5 \strokec5  toolNameFilter \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 McpToolNameFilter\cf5 \strokec5 .\cf8 \strokec8 from\cf5 \strokec5 (request.\cf8 \strokec8 data\cf5 \strokec5 ().\cf8 \strokec8 tools\cf5 \strokec5 ());\
-\
-    
-\f3\i \cf4 \strokec4 // \uc0\u33719 \u21462 \u36830 \u25509 \u37197 \u32622 \u24182 \u35760 \u24405 \u36830 \u25509 \u31867 \u22411 
-\f2\i0 \cf5 \strokec5 \
-    \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 var\cf5 \strokec5  connectionConfig \cf8 \strokec8 =\cf5 \strokec5  request.\cf8 \strokec8 data\cf5 \strokec5 ().\cf8 \strokec8 connection\cf5 \strokec5 ();\
-    LOGGER.\cf8 \strokec8 debug\cf5 \strokec5 (\cf9 \strokec9 "MCP(\{\}): Handling operation '\{\}' on remote client with connection type: \{\}"\cf5 \strokec5 , \
-        clientId, operation.\cf8 \strokec8 method\cf5 \strokec5 (), connectionConfig.\cf8 \strokec8 getClass\cf5 \strokec5 ().\cf8 \strokec8 getSimpleName\cf5 \strokec5 ());\
-\
-    
-\f3\i \cf4 \strokec4 // \uc0\u20351 \u29992 \u26032 \u30340 getClient\u26041 \u27861 \u65292 \u25903 \u25345 ConnectionConfiguration\u25509 \u21475 
-\f2\i0 \cf5 \strokec5 \
-    \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 var\cf5 \strokec5  client \cf8 \strokec8 =\cf5 \strokec5  remoteClientRegistry.\cf8 \strokec8 getClient\cf5 \strokec5 (clientId, connectionConfig);\
-\
-    \cf6 \strokec6 return\cf5 \strokec5  clientExecutor.\cf8 \strokec8 execute\cf5 \strokec5 (client, operation, toolNameFilter);\
-  \}\
-\}\
-\pard\pardeftab720\sa298\partightenfactor0
-
-\f0\b\fs36 \cf0 \strokec2 3. Langchain4JMcpClientExecutor.java\uc0\u21644 Langchain4JMcpClientHandler.java\
-\pard\pardeftab720\sa240\partightenfactor0
-
-\f2\b0\fs24 \cf0 \uc0\u36825 \u20004 \u20010 \u25991 \u20214 
-\f0\b \uc0\u19981 \u38656 \u35201 \u20462 \u25913 
-\f2\b0 \uc0\u65292 \u22240 \u20026 \u65306 \
-\pard\tx220\tx720\pardeftab720\li720\fi-720\partightenfactor0
-\ls1\ilvl0
-\f0\b \cf0 \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
-\outl0\strokewidth0 \strokec2 Langchain4JMcpClientExecutor
-\f2\b0 : \uc0\u23427 \u21482 \u22788 \u29702 MCP\u21327 \u35758 \u23618 \u38754 \u30340 \u25805 \u20316 \u65292 \u19981 \u20851 \u24515 \u24213 \u23618 \u20256 \u36755 \u26041 \u24335 \
-\ls1\ilvl0
-\f0\b \kerning1\expnd0\expndtw0 \outl0\strokewidth0 {\listtext	\uc0\u8226 	}\expnd0\expndtw0\kerning0
-\outl0\strokewidth0 \strokec2 Langchain4JMcpClientHandler
-\f2\b0 : \uc0\u23427 \u22788 \u29702 Runtime\u37197 \u32622 \u30340 \u23458 \u25143 \u31471 \u65292 \u20256 \u36755 \u31867 \u22411 \u22312 \u24037 \u21378 \u23618 \u38754 \u22788 \u29702 \
-\pard\pardeftab720\sa298\partightenfactor0
-
-\f0\b\fs36 \cf0 4. \uc0\u38656 \u35201 \u21019 \u24314 \u30340 \u26032 \u25991 \u20214 \u65306 StreamableHttpMcpTransport.java\
-\pard\pardeftab720\qc\partightenfactor0
-
-\f1\b0\fs22 \cf3 \strokec3 \
-\
-\pard\pardeftab720\partightenfactor0
-
-\f2\fs24 \cf0 \strokec2 java\
-\pard\pardeftab720\partightenfactor0
-
-\f3\i \cf4 \strokec4 /*\
-\pard\pardeftab720\partightenfactor0
-
-\f2\i0 \cf5 \strokec5  * Copyright Camunda Services GmbH and/or licensed to Camunda Services GmbH\
- * under one or more contributor license agreements. Licensed under a proprietary license.\
- * See the License.txt file for more information. You may not use this file\
- * except in compliance with the proprietary license.\
-\pard\pardeftab720\partightenfactor0
-
-\f3\i \cf4 \strokec4  */
-\f2\i0 \cf5 \strokec5 \
-\pard\pardeftab720\partightenfactor0
-\cf6 \strokec6 package\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.framework.langchain4j;\
-\
-\cf6 \strokec6 import\cf5 \strokec5  com.fasterxml.jackson.core.\cf7 \strokec7 JsonProcessingException\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  com.fasterxml.jackson.databind.\cf7 \strokec7 JsonNode\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  com.fasterxml.jackson.databind.\cf7 \strokec7 ObjectMapper\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  dev.langchain4j.agent.tool.\cf7 \strokec7 ToolExecutionRequest\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  dev.langchain4j.mcp.client.transport.\cf7 \strokec7 McpTransport\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  java.io.\cf7 \strokec7 IOException\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  java.net.URI;\
-\cf6 \strokec6 import\cf5 \strokec5  java.net.http.\cf7 \strokec7 HttpClient\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  java.net.http.\cf7 \strokec7 HttpRequest\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  java.net.http.\cf7 \strokec7 HttpResponse\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  java.time.\cf7 \strokec7 Duration\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  java.util.\cf7 \strokec7 Map\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  java.util.concurrent.atomic.\cf7 \strokec7 AtomicBoolean\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  java.util.stream.\cf7 \strokec7 Stream\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  org.slf4j.\cf7 \strokec7 Logger\cf5 \strokec5 ;\
-\cf6 \strokec6 import\cf5 \strokec5  org.slf4j.\cf7 \strokec7 LoggerFactory\cf5 \strokec5 ;\
-\
-\cf6 \strokec6 public\cf5 \strokec5  \cf6 \strokec6 class\cf5 \strokec5  \cf7 \strokec7 StreamableHttpMcpTransport\cf5 \strokec5  \cf6 \strokec6 implements\cf5 \strokec5  \cf7 \strokec7 McpTransport\cf5 \strokec5  \{\
-    \
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 static\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 Logger\cf5 \strokec5  LOGGER \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 LoggerFactory\cf5 \strokec5 .\cf8 \strokec8 getLogger\cf5 \strokec5 (\cf7 \strokec7 StreamableHttpMcpTransport\cf5 \strokec5 .\cf6 \strokec6 class\cf5 \strokec5 );\
-    \
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 String\cf5 \strokec5  baseUrl;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 Map\cf5 \strokec5 <\cf7 \strokec7 String\cf5 \strokec5 , \cf7 \strokec7 String\cf5 \strokec5 > headers;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 Duration\cf5 \strokec5  timeout;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 Duration\cf5 \strokec5  readTimeout;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 String\cf5 \strokec5  streamingContentType;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 int\cf5 \strokec5  bufferSize;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 Duration\cf5 \strokec5  flushInterval;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 boolean\cf5 \strokec5  logRequests;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf6 \strokec6 boolean\cf5 \strokec5  logResponses;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 HttpClient\cf5 \strokec5  httpClient;\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 final\cf5 \strokec5  \cf7 \strokec7 ObjectMapper\cf5 \strokec5  objectMapper;\
-\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 StreamableHttpMcpTransport\cf5 \strokec5 (\cf7 \strokec7 Builder\cf5 \strokec5  builder) \{\
-        \cf6 \strokec6 this\cf5 \strokec5 .baseUrl \cf8 \strokec8 =\cf5 \strokec5  builder.baseUrl;\
-        \cf6 \strokec6 this\cf5 \strokec5 .headers \cf8 \strokec8 =\cf5 \strokec5  builder.headers;\
-        \cf6 \strokec6 this\cf5 \strokec5 .timeout \cf8 \strokec8 =\cf5 \strokec5  builder.timeout;\
-        \cf6 \strokec6 this\cf5 \strokec5 .readTimeout \cf8 \strokec8 =\cf5 \strokec5  builder.readTimeout;\
-        \cf6 \strokec6 this\cf5 \strokec5 .streamingContentType \cf8 \strokec8 =\cf5 \strokec5  builder.streamingContentType;\
-        \cf6 \strokec6 this\cf5 \strokec5 .bufferSize \cf8 \strokec8 =\cf5 \strokec5  builder.bufferSize;\
-        \cf6 \strokec6 this\cf5 \strokec5 .flushInterval \cf8 \strokec8 =\cf5 \strokec5  builder.flushInterval;\
-        \cf6 \strokec6 this\cf5 \strokec5 .logRequests \cf8 \strokec8 =\cf5 \strokec5  builder.logRequests;\
-        \cf6 \strokec6 this\cf5 \strokec5 .logResponses \cf8 \strokec8 =\cf5 \strokec5  builder.logResponses;\
-        \cf6 \strokec6 this\cf5 \strokec5 .objectMapper \cf8 \strokec8 =\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 ObjectMapper\cf5 \strokec5 ();\
-        \cf6 \strokec6 this\cf5 \strokec5 .httpClient \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 HttpClient\cf5 \strokec5 .\cf8 \strokec8 newBuilder\cf5 \strokec5 ()\
-            .\cf8 \strokec8 connectTimeout\cf5 \strokec5 (timeout)\
-            .\cf8 \strokec8 build\cf5 \strokec5 ();\
-    \}\
-\
-    @Override\
-    \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 String\cf5 \strokec5  \cf8 \strokec8 executeTool\cf5 \strokec5 (\cf7 \strokec7 ToolExecutionRequest\cf5 \strokec5  request) \{\
-        \cf6 \strokec6 try\cf5 \strokec5  \{\
+            return sendStreamableRequest(mcpRequest);
             
-\f3\i \cf4 \strokec4 // \uc0\u26500 \u24314 MCP\u21327 \u35758 \u35831 \u27714 
-\f2\i0 \cf5 \strokec5 \
-            \cf7 \strokec7 Map\cf5 \strokec5 <\cf7 \strokec7 String\cf5 \strokec5 , \cf7 \strokec7 Object\cf5 \strokec5 > mcpRequest \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 Map\cf5 \strokec5 .\cf8 \strokec8 of\cf5 \strokec5 (\
-                \cf9 \strokec9 "jsonrpc"\cf5 \strokec5 , \cf9 \strokec9 "2.0"\cf5 \strokec5 ,\
-                \cf9 \strokec9 "method"\cf5 \strokec5 , \cf9 \strokec9 "tools/call"\cf5 \strokec5 ,\
-                \cf9 \strokec9 "params"\cf5 \strokec5 , \cf7 \strokec7 Map\cf5 \strokec5 .\cf8 \strokec8 of\cf5 \strokec5 (\
-                    \cf9 \strokec9 "name"\cf5 \strokec5 , request.\cf8 \strokec8 name\cf5 \strokec5 (),\
-                    \cf9 \strokec9 "arguments"\cf5 \strokec5 , objectMapper.\cf8 \strokec8 readValue\cf5 \strokec5 (request.\cf8 \strokec8 arguments\cf5 \strokec5 (), \cf7 \strokec7 Map\cf5 \strokec5 .\cf6 \strokec6 class\cf5 \strokec5 )\
-                )\
-            );\
-\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf8 \strokec8 sendStreamableRequest\cf5 \strokec5 (mcpRequest);\
-            \
-        \} \cf6 \strokec6 catch\cf5 \strokec5  (\cf7 \strokec7 Exception\cf5 \strokec5  e) \{\
-            \cf6 \strokec6 throw\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 RuntimeException\cf5 \strokec5 (\cf9 \strokec9 "Failed to execute tool via streamable HTTP"\cf5 \strokec5 , e);\
-        \}\
-    \}\
-\
-    @Override\
-    \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 dev\cf5 \strokec5 .\cf7 \strokec7 langchain4j\cf5 \strokec5 .\cf7 \strokec7 agent\cf5 \strokec5 .\cf7 \strokec7 tool\cf5 \strokec5 .\cf7 \strokec7 ToolSpecification\cf5 \strokec5 [] \cf8 \strokec8 listTools\cf5 \strokec5 () \{\
-        \cf6 \strokec6 try\cf5 \strokec5  \{\
-            \cf7 \strokec7 Map\cf5 \strokec5 <\cf7 \strokec7 String\cf5 \strokec5 , \cf7 \strokec7 Object\cf5 \strokec5 > mcpRequest \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 Map\cf5 \strokec5 .\cf8 \strokec8 of\cf5 \strokec5 (\
-                \cf9 \strokec9 "jsonrpc"\cf5 \strokec5 , \cf9 \strokec9 "2.0"\cf5 \strokec5 ,\
-                \cf9 \strokec9 "method"\cf5 \strokec5 , \cf9 \strokec9 "tools/list"\cf5 \strokec5 ,\
-                \cf9 \strokec9 "params"\cf5 \strokec5 , \cf7 \strokec7 Map\cf5 \strokec5 .\cf8 \strokec8 of\cf5 \strokec5 ()\
-            );\
-\
-            \cf7 \strokec7 String\cf5 \strokec5  response \cf8 \strokec8 =\cf5 \strokec5  \cf8 \strokec8 sendStreamableRequest\cf5 \strokec5 (mcpRequest);\
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to execute tool via streamable HTTP", e);
+        }
+    }
+
+    @Override
+    public dev.langchain4j.agent.tool.ToolSpecification[] listTools() {
+        try {
+            Map<String, Object> mcpRequest = Map.of(
+                "jsonrpc", "2.0",
+                "method", "tools/list",
+                "params", Map.of()
+            );
+
+            String response = sendStreamableRequest(mcpRequest);
+            // 解析并转换为ToolSpecification数组
+            // 这里需要根据实际的响应格式来实现
+            return new dev.langchain4j.agent.tool.ToolSpecification[0];
             
-\f3\i \cf4 \strokec4 // \uc0\u35299 \u26512 \u24182 \u36716 \u25442 \u20026 ToolSpecification\u25968 \u32452 
-\f2\i0 \cf5 \strokec5 \
-            
-\f3\i \cf4 \strokec4 // \uc0\u36825 \u37324 \u38656 \u35201 \u26681 \u25454 \u23454 \u38469 \u30340 \u21709 \u24212 \u26684 \u24335 \u26469 \u23454 \u29616 
-\f2\i0 \cf5 \strokec5 \
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 dev\cf5 \strokec5 .\cf7 \strokec7 langchain4j\cf5 \strokec5 .\cf7 \strokec7 agent\cf5 \strokec5 .\cf7 \strokec7 tool\cf5 \strokec5 .\cf7 \strokec7 ToolSpecification\cf5 \strokec5 [\cf7 \strokec7 0\cf5 \strokec5 ];\
-            \
-        \} \cf6 \strokec6 catch\cf5 \strokec5  (\cf7 \strokec7 Exception\cf5 \strokec5  e) \{\
-            \cf6 \strokec6 throw\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 RuntimeException\cf5 \strokec5 (\cf9 \strokec9 "Failed to list tools via streamable HTTP"\cf5 \strokec5 , e);\
-        \}\
-    \}\
-\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 String\cf5 \strokec5  \cf8 \strokec8 sendStreamableRequest\cf5 \strokec5 (\cf7 \strokec7 Map\cf5 \strokec5 <\cf7 \strokec7 String\cf5 \strokec5 , \cf7 \strokec7 Object\cf5 \strokec5 > mcpRequest) \cf6 \strokec6 throws\cf5 \strokec5  \cf7 \strokec7 Exception\cf5 \strokec5  \{\
-        \cf7 \strokec7 String\cf5 \strokec5  requestBody \cf8 \strokec8 =\cf5 \strokec5  objectMapper.\cf8 \strokec8 writeValueAsString\cf5 \strokec5 (mcpRequest);\
-        \
-        \cf6 \strokec6 if\cf5 \strokec5  (logRequests) \{\
-            LOGGER.\cf8 \strokec8 debug\cf5 \strokec5 (\cf9 \strokec9 "Streamable HTTP Request: \{\}"\cf5 \strokec5 , requestBody);\
-        \}\
-\
-        \cf7 \strokec7 HttpRequest\cf5 \strokec5 .\cf7 \strokec7 Builder\cf5 \strokec5  requestBuilder \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 HttpRequest\cf5 \strokec5 .\cf8 \strokec8 newBuilder\cf5 \strokec5 ()\
-            .\cf8 \strokec8 uri\cf5 \strokec5 (URI.\cf8 \strokec8 create\cf5 \strokec5 (baseUrl \cf8 \strokec8 +\cf5 \strokec5  \cf9 \strokec9 "/rpc"\cf5 \strokec5 ))\
-            .\cf8 \strokec8 header\cf5 \strokec5 (\cf9 \strokec9 "Content-Type"\cf5 \strokec5 , \cf9 \strokec9 "application/json"\cf5 \strokec5 )\
-            .\cf8 \strokec8 header\cf5 \strokec5 (\cf9 \strokec9 "Accept"\cf5 \strokec5 , streamingContentType)\
-            .\cf8 \strokec8 timeout\cf5 \strokec5 (timeout)\
-            .\cf8 \strokec8 POST\cf5 \strokec5 (\cf7 \strokec7 HttpRequest\cf5 \strokec5 .\cf7 \strokec7 BodyPublishers\cf5 \strokec5 .\cf8 \strokec8 ofString\cf5 \strokec5 (requestBody));\
-\
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to list tools via streamable HTTP", e);
+        }
+    }
+
+    private String sendStreamableRequest(Map<String, Object> mcpRequest) throws Exception {
+        String requestBody = objectMapper.writeValueAsString(mcpRequest);
         
-\f3\i \cf4 \strokec4 // \uc0\u28155 \u21152 \u33258 \u23450 \u20041 headers
-\f2\i0 \cf5 \strokec5 \
-        headers.\cf8 \strokec8 forEach\cf5 \strokec5 (requestBuilder\cf8 \strokec8 ::header\cf5 \strokec5 );\
-\
-        \cf7 \strokec7 HttpRequest\cf5 \strokec5  httpRequest \cf8 \strokec8 =\cf5 \strokec5  requestBuilder.\cf8 \strokec8 build\cf5 \strokec5 ();\
-\
-        \cf7 \strokec7 HttpResponse\cf5 \strokec5 <\cf7 \strokec7 Stream\cf5 \strokec5 <\cf7 \strokec7 String\cf5 \strokec5 >> response \cf8 \strokec8 =\cf5 \strokec5  httpClient.\cf8 \strokec8 send\cf5 \strokec5 (\
-            httpRequest, \
-            \cf7 \strokec7 HttpResponse\cf5 \strokec5 .\cf7 \strokec7 BodyHandlers\cf5 \strokec5 .\cf8 \strokec8 ofLines\cf5 \strokec5 ()\
-        );\
-\
-        \cf6 \strokec6 if\cf5 \strokec5  (response.\cf8 \strokec8 statusCode\cf5 \strokec5 () \cf8 \strokec8 !=\cf5 \strokec5  \cf7 \strokec7 200\cf5 \strokec5 ) \{\
-            \cf6 \strokec6 throw\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 RuntimeException\cf5 \strokec5 (\cf9 \strokec9 "HTTP request failed with status: "\cf5 \strokec5  \cf8 \strokec8 +\cf5 \strokec5  response.\cf8 \strokec8 statusCode\cf5 \strokec5 ());\
-        \}\
-\
-        \cf6 \strokec6 return\cf5 \strokec5  \cf8 \strokec8 processStreamingResponse\cf5 \strokec5 (response);\
-    \}\
-\
-    \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 String\cf5 \strokec5  \cf8 \strokec8 processStreamingResponse\cf5 \strokec5 (\cf7 \strokec7 HttpResponse\cf5 \strokec5 <\cf7 \strokec7 Stream\cf5 \strokec5 <\cf7 \strokec7 String\cf5 \strokec5 >> response) \{\
-        \cf7 \strokec7 StringBuilder\cf5 \strokec5  result \cf8 \strokec8 =\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 StringBuilder\cf5 \strokec5 ();\
-        \cf7 \strokec7 AtomicBoolean\cf5 \strokec5  completed \cf8 \strokec8 =\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 AtomicBoolean\cf5 \strokec5 (\cf7 \strokec7 false\cf5 \strokec5 );\
-\
-        response.\cf8 \strokec8 body\cf5 \strokec5 ().\cf8 \strokec8 forEach\cf5 \strokec5 (line \cf8 \strokec8 ->\cf5 \strokec5  \{\
-            \cf6 \strokec6 if\cf5 \strokec5  (\cf8 \strokec8 !\cf5 \strokec5 line.\cf8 \strokec8 trim\cf5 \strokec5 ().\cf8 \strokec8 isEmpty\cf5 \strokec5 () \cf8 \strokec8 &&\cf5 \strokec5  \cf8 \strokec8 !\cf5 \strokec5 completed.\cf8 \strokec8 get\cf5 \strokec5 ()) \{\
-                \cf6 \strokec6 try\cf5 \strokec5  \{\
-                    \cf6 \strokec6 if\cf5 \strokec5  (logResponses) \{\
-                        LOGGER.\cf8 \strokec8 debug\cf5 \strokec5 (\cf9 \strokec9 "Streamable HTTP Response chunk: \{\}"\cf5 \strokec5 , line);\
-                    \}\
-\
-                    \cf7 \strokec7 JsonNode\cf5 \strokec5  chunk \cf8 \strokec8 =\cf5 \strokec5  objectMapper.\cf8 \strokec8 readTree\cf5 \strokec5 (line);\
-                    \
-                    \cf6 \strokec6 if\cf5 \strokec5  (chunk.\cf8 \strokec8 has\cf5 \strokec5 (\cf9 \strokec9 "error"\cf5 \strokec5 )) \{\
-                        \cf6 \strokec6 throw\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 RuntimeException\cf5 \strokec5 (\cf9 \strokec9 "Server error: "\cf5 \strokec5  \cf8 \strokec8 +\cf5 \strokec5  chunk.\cf8 \strokec8 get\cf5 \strokec5 (\cf9 \strokec9 "error"\cf5 \strokec5 ));\
-                    \}\
-                    \
-                    \cf6 \strokec6 if\cf5 \strokec5  (chunk.\cf8 \strokec8 has\cf5 \strokec5 (\cf9 \strokec9 "result"\cf5 \strokec5 )) \{\
-                        \cf7 \strokec7 JsonNode\cf5 \strokec5  resultNode \cf8 \strokec8 =\cf5 \strokec5  chunk.\cf8 \strokec8 get\cf5 \strokec5 (\cf9 \strokec9 "result"\cf5 \strokec5 );\
-                        \
-                        \cf6 \strokec6 if\cf5 \strokec5  (resultNode.\cf8 \strokec8 has\cf5 \strokec5 (\cf9 \strokec9 "content"\cf5 \strokec5 )) \{\
-                            result.\cf8 \strokec8 append\cf5 \strokec5 (resultNode.\cf8 \strokec8 get\cf5 \strokec5 (\cf9 \strokec9 "content"\cf5 \strokec5 ).\cf8 \strokec8 asText\cf5 \strokec5 ());\
-                        \}\
-                        \
-                        \cf6 \strokec6 if\cf5 \strokec5  (resultNode.\cf8 \strokec8 has\cf5 \strokec5 (\cf9 \strokec9 "isError"\cf5 \strokec5 ) \cf8 \strokec8 &&\cf5 \strokec5  resultNode.\cf8 \strokec8 get\cf5 \strokec5 (\cf9 \strokec9 "isError"\cf5 \strokec5 ).\cf8 \strokec8 asBoolean\cf5 \strokec5 ()) \{\
-                            completed.\cf8 \strokec8 set\cf5 \strokec5 (\cf7 \strokec7 true\cf5 \strokec5 );\
-                            \cf6 \strokec6 throw\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 RuntimeException\cf5 \strokec5 (\cf9 \strokec9 "Tool execution error"\cf5 \strokec5 );\
-                        \}\
-                        \
-                        \cf6 \strokec6 if\cf5 \strokec5  (resultNode.\cf8 \strokec8 has\cf5 \strokec5 (\cf9 \strokec9 "done"\cf5 \strokec5 ) \cf8 \strokec8 &&\cf5 \strokec5  resultNode.\cf8 \strokec8 get\cf5 \strokec5 (\cf9 \strokec9 "done"\cf5 \strokec5 ).\cf8 \strokec8 asBoolean\cf5 \strokec5 ()) \{\
-                            completed.\cf8 \strokec8 set\cf5 \strokec5 (\cf7 \strokec7 true\cf5 \strokec5 );\
-                        \}\
-                    \}\
-                    \
-                \} \cf6 \strokec6 catch\cf5 \strokec5  (\cf7 \strokec7 JsonProcessingException\cf5 \strokec5  e) \{\
-                    \cf6 \strokec6 throw\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 RuntimeException\cf5 \strokec5 (\cf9 \strokec9 "Failed to parse streaming response"\cf5 \strokec5 , e);\
-                \}\
-            \}\
-        \});\
-\
-        \cf6 \strokec6 return\cf5 \strokec5  result.\cf8 \strokec8 toString\cf5 \strokec5 ();\
-    \}\
-\
-    \cf6 \strokec6 public\cf5 \strokec5  \cf6 \strokec6 static\cf5 \strokec5  \cf6 \strokec6 class\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \{\
-        \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 String\cf5 \strokec5  baseUrl;\
-        \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 Map\cf5 \strokec5 <\cf7 \strokec7 String\cf5 \strokec5 , \cf7 \strokec7 String\cf5 \strokec5 > headers \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 Map\cf5 \strokec5 .\cf8 \strokec8 of\cf5 \strokec5 ();\
-        \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 Duration\cf5 \strokec5  timeout \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 Duration\cf5 \strokec5 .\cf8 \strokec8 ofSeconds\cf5 \strokec5 (\cf7 \strokec7 30\cf5 \strokec5 );\
-        \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 Duration\cf5 \strokec5  readTimeout \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 Duration\cf5 \strokec5 .\cf8 \strokec8 ofSeconds\cf5 \strokec5 (\cf7 \strokec7 45\cf5 \strokec5 );\
-        \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 String\cf5 \strokec5  streamingContentType \cf8 \strokec8 =\cf5 \strokec5  \cf9 \strokec9 "application/x-ndjson"\cf5 \strokec5 ;\
-        \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 int\cf5 \strokec5  bufferSize \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 1024\cf5 \strokec5 ;\
-        \cf6 \strokec6 private\cf5 \strokec5  \cf7 \strokec7 Duration\cf5 \strokec5  flushInterval \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 Duration\cf5 \strokec5 .\cf8 \strokec8 ofSeconds\cf5 \strokec5 (\cf7 \strokec7 1\cf5 \strokec5 );\
-        \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 boolean\cf5 \strokec5  logRequests \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 false\cf5 \strokec5 ;\
-        \cf6 \strokec6 private\cf5 \strokec5  \cf6 \strokec6 boolean\cf5 \strokec5  logResponses \cf8 \strokec8 =\cf5 \strokec5  \cf7 \strokec7 false\cf5 \strokec5 ;\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \cf8 \strokec8 baseUrl\cf5 \strokec5 (\cf7 \strokec7 String\cf5 \strokec5  baseUrl) \{\
-            \cf6 \strokec6 this\cf5 \strokec5 .baseUrl \cf8 \strokec8 =\cf5 \strokec5  baseUrl;\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 this\cf5 \strokec5 ;\
-        \}\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \cf8 \strokec8 headers\cf5 \strokec5 (\cf7 \strokec7 Map\cf5 \strokec5 <\cf7 \strokec7 String\cf5 \strokec5 , \cf7 \strokec7 String\cf5 \strokec5 > headers) \{\
-            \cf6 \strokec6 this\cf5 \strokec5 .headers \cf8 \strokec8 =\cf5 \strokec5  headers;\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 this\cf5 \strokec5 ;\
-        \}\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \cf8 \strokec8 timeout\cf5 \strokec5 (\cf7 \strokec7 Duration\cf5 \strokec5  timeout) \{\
-            \cf6 \strokec6 this\cf5 \strokec5 .timeout \cf8 \strokec8 =\cf5 \strokec5  timeout;\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 this\cf5 \strokec5 ;\
-        \}\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \cf8 \strokec8 readTimeout\cf5 \strokec5 (\cf7 \strokec7 Duration\cf5 \strokec5  readTimeout) \{\
-            \cf6 \strokec6 this\cf5 \strokec5 .readTimeout \cf8 \strokec8 =\cf5 \strokec5  readTimeout;\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 this\cf5 \strokec5 ;\
-        \}\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \cf8 \strokec8 streamingContentType\cf5 \strokec5 (\cf7 \strokec7 String\cf5 \strokec5  streamingContentType) \{\
-            \cf6 \strokec6 this\cf5 \strokec5 .streamingContentType \cf8 \strokec8 =\cf5 \strokec5  streamingContentType;\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 this\cf5 \strokec5 ;\
-        \}\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \cf8 \strokec8 bufferSize\cf5 \strokec5 (\cf6 \strokec6 int\cf5 \strokec5  bufferSize) \{\
-            \cf6 \strokec6 this\cf5 \strokec5 .bufferSize \cf8 \strokec8 =\cf5 \strokec5  bufferSize;\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 this\cf5 \strokec5 ;\
-        \}\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \cf8 \strokec8 flushInterval\cf5 \strokec5 (\cf7 \strokec7 Duration\cf5 \strokec5  flushInterval) \{\
-            \cf6 \strokec6 this\cf5 \strokec5 .flushInterval \cf8 \strokec8 =\cf5 \strokec5  flushInterval;\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 this\cf5 \strokec5 ;\
-        \}\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \cf8 \strokec8 logRequests\cf5 \strokec5 (\cf6 \strokec6 boolean\cf5 \strokec5  logRequests) \{\
-            \cf6 \strokec6 this\cf5 \strokec5 .logRequests \cf8 \strokec8 =\cf5 \strokec5  logRequests;\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 this\cf5 \strokec5 ;\
-        \}\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 Builder\cf5 \strokec5  \cf8 \strokec8 logResponses\cf5 \strokec5 (\cf6 \strokec6 boolean\cf5 \strokec5  logResponses) \{\
-            \cf6 \strokec6 this\cf5 \strokec5 .logResponses \cf8 \strokec8 =\cf5 \strokec5  logResponses;\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 this\cf5 \strokec5 ;\
-        \}\
-\
-        \cf6 \strokec6 public\cf5 \strokec5  \cf7 \strokec7 StreamableHttpMcpTransport\cf5 \strokec5  \cf8 \strokec8 build\cf5 \strokec5 () \{\
-            \cf6 \strokec6 if\cf5 \strokec5  (baseUrl \cf8 \strokec8 ==\cf5 \strokec5  \cf6 \strokec6 null\cf5 \strokec5  \cf8 \strokec8 ||\cf5 \strokec5  baseUrl.\cf8 \strokec8 isBlank\cf5 \strokec5 ()) \{\
-                \cf6 \strokec6 throw\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 IllegalArgumentException\cf5 \strokec5 (\cf9 \strokec9 "baseUrl is required"\cf5 \strokec5 );\
-            \}\
-            \cf6 \strokec6 return\cf5 \strokec5  \cf6 \strokec6 new\cf5 \strokec5  \cf7 \strokec7 StreamableHttpMcpTransport\cf5 \strokec5 (\cf6 \strokec6 this\cf5 \strokec5 );\
-        \}\
-    \}\
-\}\
-\pard\pardeftab720\sa298\partightenfactor0
+        if (logRequests) {
+            LOGGER.debug("Streamable HTTP Request: {}", requestBody);
+        }
 
-\f0\b\fs36 \cf0 \strokec2 5. \uc0\u26356 \u26032 \u23548 \u20837 \u35821 \u21477 \
-\pard\pardeftab720\sa240\partightenfactor0
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+            .uri(URI.create(baseUrl + "/rpc"))
+            .header("Content-Type", "application/json")
+            .header("Accept", streamingContentType)
+            .timeout(timeout)
+            .POST(HttpRequest.BodyPublishers.ofString(requestBody));
 
-\f2\b0\fs24 \cf0 \uc0\u22312 \u20462 \u25913 \u30340 \u25991 \u20214 \u20013 \u38656 \u35201 \u28155 \u21152 \u36866 \u24403 \u30340 \u23548 \u20837 \u35821 \u21477 \u65306 \
-\pard\pardeftab720\qc\partightenfactor0
+        // 添加自定义headers
+        headers.forEach(requestBuilder::header);
 
-\f1\fs22 \cf3 \strokec3 \
-\
-\pard\pardeftab720\partightenfactor0
+        HttpRequest httpRequest = requestBuilder.build();
 
-\f2\fs24 \cf0 \strokec2 java\
-\pard\pardeftab720\partightenfactor0
+        HttpResponse<Stream<String>> response = httpClient.send(
+            httpRequest, 
+            HttpResponse.BodyHandlers.ofLines()
+        );
 
-\f3\i \cf4 \strokec4 // \uc0\u22312 Langchain4JMcpClientFactory.java\u20013 \u28155 \u21152 
-\f2\i0 \cf5 \strokec5 \
-\pard\pardeftab720\partightenfactor0
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.framework.langchain4j.\cf7 \strokec7 StreamableHttpMcpTransport\cf5 \strokec5 ;\
-\
-\pard\pardeftab720\partightenfactor0
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("HTTP request failed with status: " + response.statusCode());
+        }
 
-\f3\i \cf4 \strokec4 // \uc0\u22312 Langchain4JMcpRemoteClientHandler.java\u20013 \u21487 \u33021 \u38656 \u35201 \u28155 \u21152 
-\f2\i0 \cf5 \strokec5 \
-\pard\pardeftab720\partightenfactor0
-\cf6 \strokec6 import\cf5 \strokec5  io.camunda.connector.agenticai.mcp.client.model.\cf7 \strokec7 McpRemoteClientRequest\cf5 \strokec5 .\cf7 \strokec7 McpRemoteClientRequestData\cf5 \strokec5 .\cf7 \strokec7 ConnectionConfiguration\cf5 \strokec5 ;\
+        return processStreamingResponse(response);
+    }
+
+    private String processStreamingResponse(HttpResponse<Stream<String>> response) {
+        StringBuilder result = new StringBuilder();
+        AtomicBoolean completed = new AtomicBoolean(false);
+
+        response.body().forEach(line -> {
+            if (!line.trim().isEmpty() && !completed.get()) {
+                try {
+                    if (logResponses) {
+                        LOGGER.debug("Streamable HTTP Response chunk: {}", line);
+                    }
+
+                    JsonNode chunk = objectMapper.readTree(line);
+                    
+                    if (chunk.has("error")) {
+                        throw new RuntimeException("Server error: " + chunk.get("error"));
+                    }
+                    
+                    if (chunk.has("result")) {
+                        JsonNode resultNode = chunk.get("result");
+                        
+                        if (resultNode.has("content")) {
+                            result.append(resultNode.get("content").asText());
+                        }
+                        
+                        if (resultNode.has("isError") && resultNode.get("isError").asBoolean()) {
+                            completed.set(true);
+                            throw new RuntimeException("Tool execution error");
+                        }
+                        
+                        if (resultNode.has("done") && resultNode.get("done").asBoolean()) {
+                            completed.set(true);
+                        }
+                    }
+                    
+                } catch (JsonProcessingException e) {
+                    throw new RuntimeException("Failed to parse streaming response", e);
+                }
+            }
+        });
+
+        return result.toString();
+    }
+
+    public static class Builder {
+        private String baseUrl;
+        private Map<String, String> headers = Map.of();
+        private Duration timeout = Duration.ofSeconds(30);
+        private Duration readTimeout = Duration.ofSeconds(45);
+        private String streamingContentType = "application/x-ndjson";
+        private int bufferSize = 1024;
+        private Duration flushInterval = Duration.ofSeconds(1);
+        private boolean logRequests = false;
+        private boolean logResponses = false;
+
+        public Builder baseUrl(String baseUrl) {
+            this.baseUrl = baseUrl;
+            return this;
+        }
+
+        public Builder headers(Map<String, String> headers) {
+            this.headers = headers;
+            return this;
+        }
+
+        public Builder timeout(Duration timeout) {
+            this.timeout = timeout;
+            return this;
+        }
+
+        public Builder readTimeout(Duration readTimeout) {
+            this.readTimeout = readTimeout;
+            return this;
+        }
+
+        public Builder streamingContentType(String streamingContentType) {
+            this.streamingContentType = streamingContentType;
+            return this;
+        }
+
+        public Builder bufferSize(int bufferSize) {
+            this.bufferSize = bufferSize;
+            return this;
+        }
+
+        public Builder flushInterval(Duration flushInterval) {
+            this.flushInterval = flushInterval;
+            return this;
+        }
+
+        public Builder logRequests(boolean logRequests) {
+            this.logRequests = logRequests;
+            return this;
+        }
+
+        public Builder logResponses(boolean logResponses) {
+            this.logResponses = logResponses;
+            return this;
+        }
+
+        public StreamableHttpMcpTransport build() {
+            if (baseUrl == null || baseUrl.isBlank()) {
+                throw new IllegalArgumentException("baseUrl is required");
+            }
+            return new StreamableHttpMcpTransport(this);
+        }
+    }
 }
+5. 更新导入语句
+在修改的文件中需要添加适当的导入语句：
+
+
+java
+// 在Langchain4JMcpClientFactory.java中添加
+import io.camunda.connector.agenticai.mcp.client.framework.langchain4j.StreamableHttpMcpTransport;
+
+// 在Langchain4JMcpRemoteClientHandler.java中可能需要添加
+import io.camunda.connector.agenticai.mcp.client.model.McpRemoteClientRequest.McpRemoteClientRequestData.ConnectionConfiguration;
